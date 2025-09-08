@@ -80,3 +80,11 @@ if __name__ == "__main__":
         # print(resp)
     except Exception as e:
         print("Aviso:", e)
+
+
+def fetch_data_from_sems():
+    return None
+
+
+def get_plant_detail():
+    return None
