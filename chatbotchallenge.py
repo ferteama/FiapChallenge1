@@ -4,22 +4,12 @@
 # comando para instalar dependencia: pip install pytelegrambotapi openai pandas requests
 
 """Importação de Módulos"""
-import getpass
 import os
 import telebot
 from openai import OpenAI
 import logging
-import json
-import base64
-import requests
 import pandas as pd
-from datetime import datetime, date, time as dtime
-from typing import Dict, Any, Literal
-from langchain.chat_models import init_chat_model
-from langchain_core.vectorstores import InMemoryVectorStore
-from pathlib import Path
-from IPython.display import Audio, display, clear_output, HTML
-import time
+from datetime import datetime
 
 # --- Configuração do Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,117 +17,52 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 api_id = "29031832"
 api_hash = "8773c6535de7804d47412184f2d0a867"
 bot_token = "8335626426:AAHhixS3aWVjkJERQ4q37LFmqTqmFRFdqTw"
-openai_key = "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"
+openai_key = "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"
 
 if not bot_token or not openai_key:
     raise ValueError("Erro: Defina as variáveis de ambiente telegram_bot_token e openai_api_key")
 
-# --- MÓDULO GOODWE CLIENT (Integrado) ---
-
-Region = Literal["us", "eu"]
-BASE_URLS = {"us": "https://us.semsportal.com", "eu": "https://eu.semsportal.com"}
-
-
-def _initial_token() -> str:
-    """Gera o Token inicial (pré-login) para a API SEMS."""
-    original = {"uid": "", "timestamp": 0, "token": "", "client": "web", "version": "", "language": "en"}
-    b = json.dumps(original).encode("utf-8")
-    return base64.b64encode(b).decode("utf-8")
-
-
-def crosslogin(account: str, pwd: str, region: Region = "us") -> str:
-    """Faz o crosslogin na API SEMS e devolve o Token válido."""
-    url = f"{BASE_URLS[region]}/api/v2/common/crosslogin"
-    headers = {"Token": _initial_token(), "Content-Type": "application/json"}
-    payload = {"account": account, "pwd": pwd}
-    r = requests.post(url, json=payload, headers=headers, timeout=20)
-    r.raise_for_status()
-    js = r.json()
-    if "data" not in js or js.get("code") not in (0, 1, 200):
-        raise RuntimeError(f"Login na GoodWe falhou: {js}")
-    data_to_string = json.dumps(js["data"])
-    return base64.b64encode(data_to_string.encode("utf-8")).decode("utf-8")
-
-
-def get_inverter_data_by_column(token: str, inv_id: str, column: str, date_str: str, region: Region = "eu") -> Dict[
-    str, Any]:
-    """Busca dados de uma coluna específica do inversor."""
-    url = f"{BASE_URLS[region]}/api/PowerStationMonitor/GetInverterDataByColumn"
-    headers = {"Token": token, "Content-Type": "application/json"}
-    payload = {"date": date_str, "column": column, "id": inv_id}
-    r = requests.post(url, json=payload, headers=headers, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def client_from_env() -> Dict[str, str]:
-    """Lê as credenciais da GoodWe (SEMS) das variáveis de ambiente."""
-    acc = ("SEMS_ACCOUNT", "ecopower.management@gmail.com")
-    pwd = ("SEMS_PASSWORD", "Goodwe2018")
-    if not acc or not pwd:
-        raise RuntimeError("Defina SEMS_ACCOUNT e SEMS_PASSWORD no ambiente para usar o comando /resumo.")
-    return {"account": acc, "password": pwd}
-
-
-def parse_column_timeseries(resp_json: dict, column_name: str) -> pd.DataFrame:
-    """Extrai e parseia a série temporal da resposta da API SEMS."""
-    items = []
-    if isinstance(resp_json, dict):
-        data_obj = resp_json.get('data', {})
-        if isinstance(data_obj, dict):
-            items = data_obj.get('column1', [])
-    if not items: return pd.DataFrame()
-
-    times, values = [], []
-    for it in items:
-        t, v = it.get('date'), it.get('column')
-        if t is None or v is None: continue
-        try:
-            times.append(pd.to_datetime(t, errors='coerce'))
-            values.append(float(str(v).replace(',', '.')))
-        except (ValueError, TypeError):
-            continue
-    df = pd.DataFrame({'time': times, column_name: values}).dropna()
-    return df
-
-
-def fetch_sems_data_and_process(account: str, password: str, inverter_sn: str, req_date: date) -> pd.DataFrame:
-    """Orquestra o login, busca de dados de múltiplas colunas e unificação em um DataFrame."""
-    token = crosslogin(account, password, "us")
-    dt_str = datetime.combine(req_date, dtime(0, 0)).strftime("%Y-%m-%d %H:%M:%S")
-    columns = ["Pac", "Eday", "Cbattery1"]
-    dfs = []
-    for col in columns:
-        js = get_inverter_data_by_column(token, inverter_sn, col, dt_str, "eu")
-        df_col = parse_column_timeseries(js, col)
-        if not df_col.empty:
-            dfs.append(df_col)
-    if not dfs: return pd.DataFrame()
-
-    out = dfs[0]
-    for df_next in dfs[1:]:
-        out = pd.merge_asof(out.sort_values("time"), df_next.sort_values("time"), on="time", direction="nearest")
-    return out
-
-
-# --- MÓDULO DE ANÁLISE E IA (Integrado) ---
+# --- MÓDULO DE ANÁLISE E IA (Customizado para planilha) ---
 
 def resumo_dia(df: pd.DataFrame) -> dict:
-    """Calcula agregados simples a partir do DataFrame de dados do inversor."""
-    if df.empty: return {}
-    energia_dia = df["Eday"].dropna().iloc[-1] if "Eday" in df.columns and not df["Eday"].dropna().empty else 0.0
+    """Calcula agregados simples a partir do DataFrame, tolerando colunas diferentes."""
+    if df.empty:
+        return {}
+
+    resumo = {}
+
+    # Energia do dia
+    if "Eday" in df.columns and not df["Eday"].dropna().empty:
+        resumo["energia_dia"] = df["Eday"].dropna().iloc[-1]
+    elif "Energia" in df.columns and not df["Energia"].dropna().empty:
+        resumo["energia_dia"] = df["Energia"].sum()
+    elif "Consumo" in df.columns and not df["Consumo"].dropna().empty:
+        resumo["energia_dia"] = df["Consumo"].sum()
+    else:
+        resumo["energia_dia"] = 0.0
+
+    # Pico de potência
     if "Pac" in df.columns and not df["Pac"].dropna().empty:
         idx_max = df["Pac"].idxmax()
-        pico_p = float(df.loc[idx_max, "Pac"])
-        pico_h = df.loc[idx_max, "time"] if "time" in df.columns else None
+        resumo["pico_potencia"] = float(df.loc[idx_max, "Pac"])
+        resumo["hora_pico"] = df.loc[idx_max, "time"] if "time" in df.columns else None
+    elif "Potencia" in df.columns and not df["Potencia"].dropna().empty:
+        idx_max = df["Potencia"].idxmax()
+        resumo["pico_potencia"] = float(df.loc[idx_max, "Potencia"])
+        resumo["hora_pico"] = df.loc[idx_max, "time"] if "time" in df.columns else None
     else:
-        pico_p, pico_h = 0.0, None
-    soc_ini = int(df["Cbattery1"].dropna().iloc[0]) if "Cbattery1" in df.columns and not df[
-        "Cbattery1"].dropna().empty else None
-    soc_fim = int(df["Cbattery1"].dropna().iloc[-1]) if "Cbattery1" in df.columns and not df[
-        "Cbattery1"].dropna().empty else None
-    return {"energia_dia": energia_dia, "pico_potencia": pico_p, "hora_pico": pico_h, "soc_ini": soc_ini,
-            "soc_fim": soc_fim}
+        resumo["pico_potencia"] = 0.0
+        resumo["hora_pico"] = None
+
+    # Estado da bateria
+    if "Cbattery1" in df.columns and not df["Cbattery1"].dropna().empty:
+        resumo["soc_ini"] = int(df["Cbattery1"].dropna().iloc[0])
+        resumo["soc_fim"] = int(df["Cbattery1"].dropna().iloc[-1])
+    else:
+        resumo["soc_ini"] = None
+        resumo["soc_fim"] = None
+
+    return resumo
 
 
 def explicar_dia(resumo: dict) -> str:
@@ -145,7 +70,7 @@ def explicar_dia(resumo: dict) -> str:
     if not resumo: return "Não foi possível gerar um resumo pois não há dados para analisar."
     energia, pico = resumo.get("energia_dia", 0.0), resumo.get("pico_potencia", 0.0)
     hora, soc_ini, soc_fim = resumo.get("hora_pico"), resumo.get("soc_ini"), resumo.get("soc_fim")
-    hora_str = hora.strftime("%H:%M") if hora else "não registrado"
+    hora_str = hora.strftime("%H:%M") if hora is not None and hasattr(hora, 'strftime') else "não registrado"
     if soc_fim is not None and soc_ini is not None:
         tendencia = "carga" if soc_fim >= soc_ini else "descarga"
         soc_str = f"O estado da bateria variou de {soc_ini}% para {soc_fim}% (tendência de {tendencia})."
@@ -153,7 +78,7 @@ def explicar_dia(resumo: dict) -> str:
         soc_str = "Dados de bateria (SOC) não disponíveis."
 
     return (
-        f"Resumo do dia:\n"
+        f"Resumo do dia selecionado:\n"
         f"- Geração total de energia: {energia:.2f} kWh.\n"
         f"- Pico de potência atingido: {pico:.2f} kW às {hora_str}.\n"
         f"- {soc_str}"
@@ -179,7 +104,7 @@ def handle_start(message):
 
 @bot.message_handler(commands=['info'])
 def handle_info(message):
-    response_text = "Esse ChatBot foi criado com a OpenAI API e integrado com a API da GoodWe para análises de geração de energia. 🤖"
+    response_text = "Esse ChatBot foi criado com a OpenAI API e integrado com dados de planilha para análises de geração de energia. 🤖"
     bot.send_message(message.chat.id, response_text)
     logging.info(f'Comando /info recebido de {message.from_user.username}')
 
@@ -191,43 +116,113 @@ def handle_help(message):
         "/start - Inicia a conversa com o bot.\n"
         "/help - Mostra esta mensagem de ajuda.\n"
         "/info - Exibe informações sobre o bot.\n"
-        "/resumo <inverter_sn> <data> - Gera um resumo da produção de energia.\n"
-        "  ↳ Exemplo: /resumo 5010KETU229W6177 2025-08-12\n\n"
+        "/prioridade - Exibe a distribuição de prioridade dos seus dispositivos de casa e suas potências.\n"
+        "/alexa - Saiba mais sobre a nossa interação com a Alexa.\n"
+        "/resumo <data> - Gera um resumo da produção de energia a partir da planilha.\n"
+        "  ↳ Exemplo: /resumo 2025-01-09\n\n"
         "Para outras dúvidas, apenas envie sua pergunta que a IA irá responder!"
     )
     bot.reply_to(message, help_text)
     logging.info(f"Comando /help recebido de {message.from_user.username}")
 
-
 @bot.message_handler(commands=['resumo'])
 def handle_resumo(message):
-    """Handler para o novo comando de resumo da GoodWe."""
+    """Handler para o comando de resumo usando dados da planilha Excel."""
     args = message.text.split()
-    if len(args) != 3:
-        bot.reply_to(message, "Formato incorreto. Use: /resumo <inverter_sn> <data_AAAA-MM-DD>")
+    if len(args) != 2:
+        bot.reply_to(message, "Formato incorreto. Use: /resumo <data_AAAA-MM-DD>")
         return
 
-    inverter_sn, date_str = args[1], args[2]
+    date_str = args[1]
     try:
         req_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        bot.reply_to(message, "Formato de data inválido. Use AAAA-MM-DD (ex: 2025-08-12).")
+        bot.reply_to(message, "Formato de data inválido. Use AAAA-DD-MM (ex: 2025-01-09).")
         return
 
-    bot.reply_to(message,
-                 f"Entendido! Buscando dados para o inversor {inverter_sn} no dia {date_str}. Isso pode levar um momento...")
+    bot.reply_to(message, f"Entendido! Buscando dados na planilha para o dia {date_str}...")
     bot.send_chat_action(message.chat.id, 'typing')
 
     try:
-        creds = client_from_env()
-        df = fetch_sems_data_and_process(creds['account'], creds['password'], inverter_sn, req_date)
+        # 1) Abrir arquivo (CSV preferencialmente, com sep=';' e header na 3ª linha)
+        df = None
+        if os.path.exists("apresentacao.csv"):
+           try:
+                df = pd.read_csv("apresentacao.csv", sep=";", header=2, encoding="utf-8")
+           except Exception:
+                df = pd.read_csv("apresentacao.csv", sep=";", header=2, engine="python", encoding="utf-8", low_memory=False)
+        elif os.path.exists("apresentacao.xlsx"):
+            df = pd.read_excel("apresentacao.xlsx", header=2)
+        elif os.path.exists("apresentacao.xls"):
+            try:
+                df = pd.read_excel("apresentacao.xls", header=2)
+            except Exception as e:
+                raise RuntimeError("Erro lendo .xls: instale 'xlrd' no ambiente ou converta para .xlsx/.csv. " + str(e))
+        else:
+            raise FileNotFoundError("Nenhum arquivo 'apresentacao.csv/.xls/.xlsx' encontrado no diretório do script.")
 
-        if df.empty:
-            bot.send_message(message.chat.id,
-                             "Não encontrei dados para a data e inversor informados. Verifique se os dados estão corretos.")
+        logging.info(f"Colunas encontradas: {list(df.columns)}")
+
+        # 2) achar coluna de data/hora automaticamente
+        def find_col_by_keywords(cols, keywords):
+            for c in cols:
+                lower = str(c).lower()
+                for k in keywords:
+                    if k in lower:
+                        return c
+            return None
+
+        cols = list(df.columns)
+        time_col = find_col_by_keywords(cols, ["time", "date", "data", "hora", "timestamp", "dia"])
+        if not time_col:
+            bot.send_message(message.chat.id, f"A planilha não possui coluna de data reconhecível. Colunas: {cols}")
             return
 
-        resumo_dados = resumo_dia(df)
+        # 3) tentar parsear datas (dayfirst=True pois seu CSV tem '09.01.2025')
+        df[time_col] = pd.to_datetime(df[time_col], dayfirst=True, errors="coerce", infer_datetime_format=True)
+        # se nada parseou, tentar sem dayfirst
+        if df[time_col].isna().all():
+            df[time_col] = pd.to_datetime(df[time_col], dayfirst=False, errors="coerce", infer_datetime_format=True)
+
+        if df[time_col].isna().all():
+            bot.send_message(message.chat.id, f"A coluna de tempo '{time_col}' não conseguiu ser convertida para datas. Envie as 3 primeiras células dessa coluna para eu analisar.")
+            return
+
+        # 4) informar intervalo de datas e filtrar pela data pedida
+        available_dates = sorted(pd.unique(df[time_col].dt.date.dropna()))
+        if not available_dates:
+            bot.send_message(message.chat.id, "Nenhuma data válida encontrada na planilha.")
+            return
+
+        if req_date not in available_dates:
+            bot.send_message(
+                message.chat.id,
+                f"Nenhum dado para {req_date}. Datas disponíveis: {available_dates[0]} até {available_dates[-1]}. "
+                f"Ex.: /resumo {available_dates[0]}"
+            )
+            return
+
+        dados_dia = df[df[time_col].dt.date == req_date]
+
+        if dados_dia.empty:
+            bot.send_message(message.chat.id, "Não encontrei linhas para a data (apesar de a data existir no índice).")
+            return
+
+        # 5) detectar colunas de potência/energia/soc e renomear para compatibilidade
+        power_col = find_col_by_keywords(cols, ["(w)", "pac", "p meter", "p backup", "power"])
+        energy_col = find_col_by_keywords(cols, ["(kwh)", "eday", "pv generation", "total output", "generation", "output"])
+        soc_col = find_col_by_keywords(cols, ["soc", "cbattery", "battery"])
+
+        rename_map = {}
+        if time_col: rename_map[time_col] = "time"
+        if power_col: rename_map[power_col] = "Pac"
+        if energy_col: rename_map[energy_col] = "Eday"
+        if soc_col: rename_map[soc_col] = "Cbattery1"
+
+        df_ren = dados_dia.rename(columns=rename_map)
+
+        # 6) chama suas funções de resumo
+        resumo_dados = resumo_dia(df_ren)
         explicacao = explicar_dia(resumo_dados)
         bot.send_message(message.chat.id, explicacao)
 
@@ -236,8 +231,16 @@ def handle_resumo(message):
         bot.send_message(message.chat.id, f"Ocorreu um erro ao buscar os dados: {e}")
 
 
+@bot.message_handler(commands=['Alexa'])
+def handle_alexa(message):
+    """Handler para o comando Alexa"""
+
+@bot.message_handler(commands=['prioridade'])
+def handle_prioridade(message):
+    """Handler para o comando de prioridade"""
+
 @bot.message_handler(func=lambda message: True)
-def handle_all_other_messages(message):
+def handle_todas_as_outras_mensagens(message):
     """Handler genérico que usa a IA da OpenAI."""
     try:
         logging.info(f"Mensagem recebida de {message.from_user.username}: {message.text}")
@@ -245,8 +248,8 @@ def handle_all_other_messages(message):
 
         response = ai_client.chat.completions.create(
             model='gpt-4o-mini',
-            messages = [{"role": "user","content": f"{message.text}Responda como se você fosse um assistente da empresa GoodWe, uma empresa que auxilia o usuário a ver dados sobre consumo de energia na sua casa (em KWh)" }],
-            max_tokens=2000
+            messages = [{"role": "user","content": f"{message.text}Responda como se você fosse um assistente da empresa GoodWe, uma empresa que auxilia o usuário a ver dados sobre consumo de energia na sua casa (em KWh), utilize uma linguagem meio informal para que os nossos usuários se adequem mais as informações, aliás utilize emojis em casos e tópicos ou explicações" }],
+            max_tokens=3000
         )
         ai_response = response.choices[0].message.content
         bot.send_message(message.chat.id, ai_response)

@@ -10,11 +10,10 @@ import base64
 import requests
 from typing import Literal, Dict, Any
 
-Region = Literal["us", "eu"]
+Region = Literal["us"]
 
 BASE = {
     "us": "https://us.semsportal.com",
-    "eu": "https://eu.semsportal.com",
 }
 
 def _initial_token() -> str:
@@ -29,7 +28,7 @@ def crosslogin(account: str, pwd: str, region: Region = "us") -> str:
     """
     Faz o crosslogin e devolve o Token válido (Base64 do campo 'data' da resposta).
     """
-    url = f"{BASE[region]}/api/v2/common/crosslogin"
+    url = f"{BASE[region]}/api/v3/common/crosslogin"
     headers = {"Token": _initial_token(), "Content-Type": "application/json", "Accept": "*/*"}
     payload = {
         "account": account,
