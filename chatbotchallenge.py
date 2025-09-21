@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 api_id = "29031832"
 api_hash = "8773c6535de7804d47412184f2d0a867"
 bot_token = "8335626426:AAHhixS3aWVjkJERQ4q37LFmqTqmFRFdqTw"
-openai_key = "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"
+openai_key = "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"
 
 if not bot_token or not openai_key:
     raise ValueError("Erro: Defina as variáveis de ambiente telegram_bot_token e openai_api_key")
